@@ -1,114 +1,155 @@
-# Traffic Light with Countdown Display: How It Works
+# Traffic Light with Countdown Display (ESP32)
 
-The program does two things at the same time: the traffic light changes phases, and a one-digit seven-segment display shows the seconds left until the phase ends. A hardware timer does all the counting, and `loop()` only displays the result.
+A traffic light that follows the Ukrainian traffic rules (ПДР України), driven by a hardware timer, with a one-digit seven-segment countdown display built from separate LEDs and resistors.
 
-## Overview
+## Features
 
-The timer calls `countDownPhaseTime()` every 1 ms. That function decrements two counters:
+- Phase cycle by the rules: green → green blink → yellow → red → red+yellow → green.
+- Special mode: blinking yellow (unregulated intersection), enabled with one constant.
+- All timing comes from a hardware timer interrupt (1 ms tick), with no `delay()`.
+- The countdown display shows the seconds left until the color changes.
+- The interrupt handler only counts down and sets a flag. All the real work runs in `loop()`.
 
-- `timeLeftMs` is the time left until the next action: the end of a phase, or one blink step.
-- `phaseLeftMs` is the time left until the color changes. The display reads this one.
+## Hardware
 
-When `timeLeftMs` reaches zero, `handlePhaseEnd()` is called. It decides what happens next and turns on the new phase through `startPhase()`.
+| Part | Quantity | Notes |
+|---|---|---|
+| ESP32-S3 board | 1 | e.g. ESP32-S3-DevKitC-1 (onboard RGB LED on GPIO 48) |
+| Red, yellow, green LEDs | 1 each | Traffic light |
+| Resistors for the traffic-light LEDs | 3 | As in the lesson circuit |
+| 3 mm LEDs for the display | 14 | 2 per segment |
+| 330 Ω resistors for the display | 14 | 1 per display LED |
+| Breadboard | 1 | At least 30 columns (400 points) for the display |
+| Jumper wires | ~30 | |
 
-Phase sequence:
+### Pin map
 
-```
-GREEN -> GREEN_BLINK -> YELLOW -> RED -> RED_YELLOW -> GREEN
-```
-
-## Function by function
-
-### `setup()`
-
-Runs once.
-
-- Configures all pins as outputs (three traffic-light LEDs and seven segments) and blanks the display.
-- Creates the timer: a prescaler of 80 gives 1 MHz, so one tick is 1 µs.
-- Attaches the `countDownPhaseTime` interrupt.
-- Calls `startPhase(GREEN)`, so the initial state is set before the timer starts.
-- `timerAlarmWrite(..., 1000, true)` and `timerAlarmEnable` make the timer fire periodically every 1000 µs.
-
-### `countDownPhaseTime()`
-
-Called from the interrupt once per millisecond.
-
-- Decrements `phaseLeftMs` and `timeLeftMs`, but never below zero, to avoid underflow.
-- If `timeLeftMs` has just reached zero, calls `handlePhaseEnd()`.
-- Deliberately short and does not print to Serial, because that is not allowed inside an interrupt.
-
-### `handlePhaseEnd()`
-
-Answers "what comes next".
-
-- Follows the sequence: green, green blink, yellow, red, red+yellow, then green again.
-- During blinking it counts steps: 6 steps of 300 ms (3 blinks, two steps each).
-- While steps remain, it calls `toggleBlink()`. When they run out, it switches to yellow.
-
-### `startPhase(State state)`
-
-Begins a new phase.
-
-- Stores the state in `currentState` and raises the `hasStateChanged` flag (for Serial output).
-- Turns on the right LEDs via `setLights()`.
-- Sets both counters.
-- For green, `timeLeftMs` is 4000 ms and `phaseLeftMs` is `GREEN_TOTAL_MS` (5800 ms: steady green plus blinking), so the countdown does not break during blinking.
-- For the other phases, both counters equal the phase duration.
-
-### `setLights(red, yellow, green)`
-
-Turns the three LEDs on or off at once. It is just three `digitalWrite` calls.
-
-### `toggleBlink(pin)`
-
-Flips the LED on the given pin and resets `timeLeftMs` to the blink half-period (300 ms). This is how blinking is built from repeated steps.
-
-### `showDisplayDigit(digit)`
-
-Shows a digit on the display.
-
-- Takes the digit's mask from the table. Each bit is one segment: bit 0 is `a`, bit 6 is `g`.
-- Loops over the seven segments and decides for each whether it should light.
-- A lit segment gets `LOW` on its pin, an unlit one gets `HIGH`, because the anodes are wired to 3V3.
-- A value outside 0-9 turns all segments off.
-
-### `getStateName(state)`
-
-Returns the state name as text for `Serial`. It is only used for debugging.
-
-### `loop()`
-
-Runs forever and calculates nothing, it only displays.
-
-1. Inside a critical section (`portENTER_CRITICAL`), copies the data shared with the interrupt: the state-changed flag, the state, and `phaseLeftMs`. This way the interrupt cannot change them in the middle of the read.
-2. Converts `phaseLeftMs` to seconds, rounding up: `(leftMs + 999) / 1000`. So 1000 ms shows as 1, and 1001 ms shows as 2. If time has run out, the digit is `-1` (blank the display).
-3. Redraws the display only if the digit has changed.
-4. If the state has changed, prints it to `Serial`. Serial output lives here, not in the interrupt.
-
-## Example: the red phase
-
-The interrupt fires every millisecond. `startPhase(RED)` turns on the red LED and sets both counters to 5000. With each tick the counters go down, and `loop()` sees `phaseLeftMs`:
-
-| `phaseLeftMs` | Digit shown |
+| Function | GPIO |
 |---|---|
-| 5000..4001 | 5 |
-| 4000..3001 | 4 |
-| 3000..2001 | 3 |
-| 2000..1001 | 2 |
-| 1000..1 | 1 |
+| Red LED | 17 |
+| Yellow LED | 15 |
+| Green LED | 16 |
+| Segment a | 4 |
+| Segment b | 5 |
+| Segment c | 6 |
+| Segment d | 7 |
+| Segment e | 8 |
+| Segment f | 9 |
+| Segment g | 10 |
+| Display power | 3V3 |
 
-Exactly 5 seconds later `timeLeftMs` reaches 0. The interrupt calls `handlePhaseEnd()`, which calls `startPhase(RED_YELLOW)`; red and yellow light up and the counters become 1500. On its next pass, `loop()` sees the digit 2.
+### Display wiring
 
-## Digits shown during one full cycle
+```
+ aaa
+f   b
+f   b
+ ggg
+e   c
+e   c
+ ddd
+```
+
+- The display is common anode: all LED anodes (long legs) go to 3V3.
+- Each LED cathode (short leg) goes through its own 330 Ω resistor to the segment's GPIO.
+- The two LEDs of one segment are in parallel, each with its own resistor. Do not share one resistor between them.
+- A segment is on when its pin is `LOW`.
+- Current is about 3.3 mA per LED, about 6.6 mA per GPIO pin.
+
+The breadboard layout is in `two_leds_per_segment_breadboard.svg`.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `traffic_light_countdown_oop.ino` | **Main version.** Classes `TrafficLight` and `CountdownDisplay`; the ISR only sets a flag; register writes for the traffic-light LEDs |
+| `traffic_light_countdown_flag_reg.ino` | Same logic without classes |
+| `traffic_light_countdown_flag.ino` | Without classes, `digitalWrite` instead of register writes |
+| `traffic_light_countdown_v2.ino` | Earlier version: phase logic runs inside the ISR |
+| `*_marked.ino` | Copies with `[NEW]` / `[CHANGED]` / `[REMOVED]` markers against the previous version |
+| `one_digit_test.ino` | Display test: each segment in turn, then digits 0–9 |
+| `two_leds_per_segment_breadboard.svg` | Breadboard layout for the display |
+| `traffic_light_countdown_explained.md` | Function-by-function explanation |
+
+## Build and upload
+
+1. Install the Arduino IDE and the **arduino-esp32 2.x** board package. The timer calls (`timerBegin(0, 80, true)`, `timerAlarmWrite`, `timerAlarmEnable`) use the 2.x API; core 3.x changed it.
+2. Select your ESP32-S3 board and port.
+3. Open `traffic_light_countdown_oop.ino` and upload.
+4. Open the Serial Monitor at 115200 baud to see phase changes.
+
+If the compiler cannot find `soc/gpio_reg.h`, delete that `#include` line. `Arduino.h` usually includes it already.
+
+## Settings
+
+All settings are constants at the top of the sketch.
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `UNREGULATED_MODE` | `false` | `true` = start in blinking-yellow mode |
+| `DURATION_GREEN_MS` | 4000 | Steady green |
+| `DURATION_YELLOW_MS` | 2000 | Yellow |
+| `DURATION_RED_MS` | 5000 | Red |
+| `DURATION_RED_YELLOW_MS` | 1500 | Red+yellow |
+| `BLINK_HALF_PERIOD_MS` | 300 | Half-period of blinking |
+| `GREEN_BLINK_COUNT` | 3 | Number of green blinks |
+
+The display shows one digit, so each phase must stay at 9 seconds or less. For green this means steady green plus blinking.
+
+## What the display shows
 
 | Phase | Duration | Digits |
 |---|---|---|
-| Green + blink | 5.8 s | 6 (0.8 s), 5, 4, 3, 2, 1 |
+| Green + blink | 5.8 s | 6, 5, 4, 3, 2, 1 |
 | Yellow | 2 s | 2, 1 |
 | Red | 5 s | 5, 4, 3, 2, 1 |
-| Red + yellow | 1.5 s | 2 (1 s), 1 (0.5 s) |
+| Red + yellow | 1.5 s | off |
+| Blinking yellow | — | off |
 
-## Notes
+Seconds are rounded up: 1..1000 ms shows 1, 1001..2000 ms shows 2. The first green digit lasts 0.8 s because the total green time is 5.8 s. Set `DURATION_GREEN_MS = 4200` to make every digit a full second.
 
-- The logic was checked on a computer with a simulated 1 ms timer. The code has not been run on the board.
-- GPIO 4-10 are safe on ESP32-S3. On a classic ESP32, GPIO 6-11 are used by flash and cannot be used for segments.
+## How it works
+
+```
+Hardware timer (1 ms)
+    │
+    ▼
+onTimer() ──► trafficLight.tick()        [ISR, IRAM_ATTR]
+                │ decrement counters
+                │ set isPhaseEnded flag
+                ▼
+loop() ──► trafficLight.update()
+             │ flag set? -> handlePhaseEnd() -> startPhase()
+             │                                   └─► traffic-light LEDs
+             ▼
+          trafficLight.getDisplayLeftMs()
+             ▼
+          countdownDisplay.showDigit(seconds) ──► display segments
+```
+
+How the code follows the lesson's interrupt rules:
+
+- **The ISR is minimal.** It only decrements counters and sets a flag.
+- **Shared variables are `volatile`.** Only the three fields shared with the ISR are; `loop()` reads them under a spinlock (`portENTER_CRITICAL` / `portENTER_CRITICAL_ISR`).
+- **No `delay()`** anywhere in the sketch.
+- **`IRAM_ATTR`** is on every function the ISR calls: `onTimer()` and `tick()`.
+- **No `Serial` or library calls in the ISR.** Serial output and pin writes happen in `loop()`.
+
+## Testing
+
+1. Upload `one_digit_test.ino` first. Every LED must light when its segment is on, and no LED may light with a different segment. Digits 0 and 8 must look different.
+2. Then upload the traffic light and compare the digits with the table above.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Display stays dark | Check 3V3 to the anode rails. Some breadboards have rails split in the middle; use the link wire. |
+| Board keeps rebooting | The board is a classic ESP32, not an S3. GPIO 6–11 are used by flash there; move the segments to other pins. |
+| One LED of a segment lights with a different segment | Its resistor sits on the wrong breadboard strip. Example: B1 lighting only when segment a is on means B1's resistor is on segment a's node instead of segment b's. |
+| One LED never lights | The LED is reversed (long leg must go to 3V3) or its resistor is not in the LED's cathode strip. |
+| Compile errors in `timerBegin` / `timerAlarmWrite` | The board package is arduino-esp32 3.x. Install 2.x or port the timer calls to the 3.x API. |
+
+## Status
+
+The logic was checked on a computer with a simulated 1 ms timer. It has not yet been verified as a full ESP32 build on real hardware.
