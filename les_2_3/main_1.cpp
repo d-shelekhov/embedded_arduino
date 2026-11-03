@@ -1,38 +1,46 @@
-#include <iostream>
-#include <string>
+#include <Arduino.h>
 
-const std::string EXIT = "exit";
+const uint8_t LED1_PIN = 8;
+const uint8_t LED2_PIN = 9;
+const uint8_t LED3_PIN = 10;
 
-int main() {
-    /*
-        It is a just an example. Programm works only with positive number. Otherwise - uncatched exception
-    */
-    std::string input;
-    std::cout << "Please enter the positive number. Exter 'exit' to the exit." << std::endl;
+const unsigned long LED1_INTERVAL_MS = 200;
+const unsigned long LED2_INTERVAL_MS = 500;
+const unsigned long LED3_INTERVAL_MS = 1000;
 
-    while (std::cin >> input && input != EXIT)
-        {
-            int n = std::stoi(input);
+struct BlinkTask {
+  uint8_t pin;
+  unsigned long interval;
+  unsigned long lastToggle;
+  bool state;
+};
 
-            // Bitwise AND with 1 works as a mask. 
-            // It keeps only the last (least significant) bit of n and zeroes out all the other bits. 
-            // That last bit alone tells us whether n is odd or even.
-            //
-            // n = 13 (1101)
-            //   1101   (13)
-            // & 0001   (1)
-            // ------
-            //   0001   -> result is 1 (non-zero) -> is odd
-            //
-            // n = 8 (1000)
-            //   1000   (8)
-            // & 0001   (1)
-            // ------
-            //   0000   -> result is 0 -> is even
-            if (n & 1)
-                std::cout << "Odd" << std::endl;
-            else
-                std::cout << "Even" << std::endl;
-        }
-    return 0;
+BlinkTask tasks[] = {
+  { LED1_PIN, LED1_INTERVAL_MS, 0, LOW },
+  { LED2_PIN, LED2_INTERVAL_MS, 0, LOW },
+  { LED3_PIN, LED3_INTERVAL_MS, 0, LOW },
+};
+const uint8_t TASK_COUNT = sizeof(tasks) / sizeof(tasks[0]);
+
+void runBlinkTask(BlinkTask &task, unsigned long now) {
+  if (now - task.lastToggle >= task.interval) {
+    task.lastToggle += task.interval;
+    task.state = !task.state;
+    digitalWrite(task.pin, task.state);
+  }
+}
+
+void setup() {
+  for (uint8_t i = 0; i < TASK_COUNT; i++) {
+    pinMode(tasks[i].pin, OUTPUT);
+    digitalWrite(tasks[i].pin, LOW);
+  }
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  for (uint8_t i = 0; i < TASK_COUNT; i++) {
+    runBlinkTask(tasks[i], now);
+  }
 }
